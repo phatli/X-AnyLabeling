@@ -24,11 +24,17 @@ class RemoteServer(Model):
             "type",
             "display_name",
         ]
-        widgets = ["remote_server_select_combobox"]
+        widgets = [
+            "remote_server_select_combobox",
+            "output_label",
+            "output_select_combobox",
+        ]
         output_modes = {
-            "rectangle": QCoreApplication.translate("Model", "Rectangle"),
+            "polygon": QCoreApplication.translate("Model", "Polygon"),
+            "rotation": QCoreApplication.translate("Model", "OBB (Rotated)"),
+            "rectangle": QCoreApplication.translate("Model", "HBB (Horizontal)"),
         }
-        default_output_mode = "rectangle"
+        default_output_mode = "rotation"
 
     def __init__(self, model_config, on_message) -> None:
         super().__init__(model_config, on_message)
@@ -64,6 +70,24 @@ class RemoteServer(Model):
         self.video_prompt_frame = None
         self.video_session_image_list = None
         self.video_prompt_type = None
+
+    def _normalize_output_mode(self) -> str:
+        mode = (self.output_mode or "").strip().lower()
+        if mode in {"obb", "rotation"}:
+            return "rotation"
+        if mode in {"hbb", "rectangle", "box"}:
+            return "rectangle"
+        if mode in {"polygon", "mask", "seg"}:
+            return "polygon"
+        return self.Meta.default_output_mode
+
+    def _extract_error_message(self, result):
+        error = result.get("error")
+        if isinstance(error, dict):
+            message = error.get("message")
+            if message:
+                return str(message)
+        return None
 
     def set_cache_auto_label(self, text, gid):
         """Set cache auto label"""
@@ -169,6 +193,7 @@ class RemoteServer(Model):
         params["conf_threshold"] = self.conf_threshold
         params["iou_threshold"] = self.iou_threshold
         params["epsilon_factor"] = self.epsilon_factor
+        params["output_mode"] = self._normalize_output_mode()
         if text_prompt:
             logger.debug(f"Received text prompt: {text_prompt}")
             params["text_prompt"] = text_prompt.rstrip(".")
@@ -345,9 +370,21 @@ class RemoteServer(Model):
                 )
                 init_response.raise_for_status()
                 init_result = init_response.json()
+                if init_result.get("success") is False:
+                    message = self._extract_error_message(init_result)
+                    if message:
+                        self.on_message(message)
+                    self._reset_video_session()
+                    return AutoLabelingResult([], replace=self.replace)
                 self.video_session_id = init_result.get("data", {}).get(
                     "session_id"
                 )
+                if not self.video_session_id:
+                    message = self._extract_error_message(init_result)
+                    if message:
+                        self.on_message(message)
+                    self._reset_video_session()
+                    return AutoLabelingResult([], replace=self.replace)
                 self.video_initialized = True
                 self.video_session_image_list = image_list.copy()
                 logger.info(
@@ -365,6 +402,7 @@ class RemoteServer(Model):
                     "params": {
                         "conf_threshold": self.conf_threshold,
                         "epsilon_factor": self.epsilon_factor,
+                        "output_mode": self._normalize_output_mode(),
                     },
                 },
                 headers=self.headers,
@@ -372,6 +410,12 @@ class RemoteServer(Model):
             )
             prompt_response.raise_for_status()
             prompt_result = prompt_response.json()
+            if prompt_result.get("success") is False:
+                message = self._extract_error_message(prompt_result)
+                if message:
+                    self.on_message(message)
+                self._reset_video_session()
+                return AutoLabelingResult([], replace=self.replace)
             data = prompt_result.get("data", {})
 
             self.video_prompt_frame = current_index
@@ -507,9 +551,21 @@ class RemoteServer(Model):
                 )
                 init_response.raise_for_status()
                 init_result = init_response.json()
+                if init_result.get("success") is False:
+                    message = self._extract_error_message(init_result)
+                    if message:
+                        self.on_message(message)
+                    self._reset_video_session()
+                    return AutoLabelingResult([], replace=False)
                 self.video_session_id = init_result.get("data", {}).get(
                     "session_id"
                 )
+                if not self.video_session_id:
+                    message = self._extract_error_message(init_result)
+                    if message:
+                        self.on_message(message)
+                    self._reset_video_session()
+                    return AutoLabelingResult([], replace=False)
                 self.video_initialized = True
                 self.video_session_image_list = image_list.copy()
                 logger.info(
@@ -559,6 +615,7 @@ class RemoteServer(Model):
                     "params": {
                         "conf_threshold": self.conf_threshold,
                         "epsilon_factor": self.epsilon_factor,
+                        "output_mode": self._normalize_output_mode(),
                     },
                 },
                 headers=self.headers,
@@ -566,6 +623,12 @@ class RemoteServer(Model):
             )
             prompt_response.raise_for_status()
             prompt_result = prompt_response.json()
+            if prompt_result.get("success") is False:
+                message = self._extract_error_message(prompt_result)
+                if message:
+                    self.on_message(message)
+                self._reset_video_session()
+                return AutoLabelingResult([], replace=False)
             data = prompt_result.get("data", {})
 
             self.video_prompt_frame = current_index
