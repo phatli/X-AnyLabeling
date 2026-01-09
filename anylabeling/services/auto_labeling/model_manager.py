@@ -43,6 +43,7 @@ class ModelManager(QObject):
     prediction_finished = pyqtSignal()
     request_next_files_requested = pyqtSignal()
     output_modes_changed = pyqtSignal(dict, str)
+    remote_server_models_ready = pyqtSignal(dict)
 
     def __init__(self):
         super().__init__()
@@ -55,6 +56,10 @@ class ModelManager(QObject):
         self.model_download_thread = None
         self.model_execution_thread = None
         self.model_execution_thread_lock = Lock()
+        self.remote_server_models_thread = None
+        self.remote_server_models_worker = None
+        self.remote_server_models_lock = Lock()
+        self.remote_server_models_cache = {}
 
         self.load_model_configs()
 
@@ -2028,6 +2033,8 @@ class ModelManager(QObject):
         if self.loaded_model_config is not None:
             self.loaded_model_config["model"].unload()
             self.loaded_model_config = None
+        with self.remote_server_models_lock:
+            self.remote_server_models_cache = {}
 
     def predict_shapes(
         self,
@@ -2206,6 +2213,16 @@ class ModelManager(QObject):
         if self.loaded_model_config["type"] == "remote_server":
             self.loaded_model_config["model"].set_model_id(model_id)
 
+    def clear_remote_server_cache(self):
+        """释放远端服务缓存"""
+        if self.loaded_model_config is None:
+            return
+
+        if self.loaded_model_config["type"] == "remote_server":
+            model = self.loaded_model_config.get("model")
+            if hasattr(model, "clear_server_cache"):
+                model.clear_server_cache()
+
     def get_remote_server_available_models(self):
         """Get available models from remote server"""
         if self.loaded_model_config is None:
@@ -2214,6 +2231,57 @@ class ModelManager(QObject):
         if self.loaded_model_config["type"] == "remote_server":
             return self.loaded_model_config["model"].get_available_models()
         return {}
+
+    def get_remote_server_available_models_cached(self):
+        """Get cached models from remote server without blocking UI."""
+        with self.remote_server_models_lock:
+            return dict(self.remote_server_models_cache)
+
+    def request_remote_server_models(self):
+        """Fetch remote server models in a background thread."""
+        if (
+            self.loaded_model_config is None
+            or self.loaded_model_config.get("type") != "remote_server"
+        ):
+            return
+        if (
+            self.remote_server_models_thread is not None
+            and self.remote_server_models_thread.isRunning()
+        ):
+            return
+
+        self.remote_server_models_thread = QThread()
+        self.remote_server_models_worker = GenericWorker(
+            self._fetch_remote_server_models
+        )
+        self.remote_server_models_worker.finished.connect(
+            self.remote_server_models_thread.quit
+        )
+        self.remote_server_models_worker.moveToThread(
+            self.remote_server_models_thread
+        )
+        self.remote_server_models_thread.started.connect(
+            self.remote_server_models_worker.run
+        )
+        self.remote_server_models_thread.start()
+
+    def _fetch_remote_server_models(self):
+        models = {}
+        with self.loaded_model_config_lock:
+            model_config = self.loaded_model_config
+        if model_config is None or model_config.get("type") != "remote_server":
+            self.remote_server_models_ready.emit(models)
+            return
+        try:
+            models = model_config["model"].get_available_models()
+        except Exception as e:
+            logger.error(f"Failed to fetch remote server models: {e}")
+            models = {}
+        with self.remote_server_models_lock:
+            self.remote_server_models_cache = models or {}
+        self.remote_server_models_ready.emit(
+            dict(self.remote_server_models_cache)
+        )
 
     def set_mask_fineness(self, epsilon):
         """Set mask fineness (epsilon value for Douglas-Peucker algorithm)"""

@@ -136,6 +136,14 @@ def get_image_size(image_path):
         return img.size
 
 
+def get_batch_end_index(self, start_index):
+    total_images = len(self.image_list)
+    if total_images < 1:
+        return None
+
+    return total_images - 1
+
+
 def finish_processing(self, progress_dialog):
     target_index = self.current_index
     target_file = self.image_list[self.current_index]
@@ -146,6 +154,8 @@ def finish_processing(self, progress_dialog):
     del self.run_tracker
     del self.image_index
     del self.current_index
+    if hasattr(self, "batch_end_index"):
+        del self.batch_end_index
 
     progress_dialog.close()
 
@@ -225,7 +235,11 @@ def save_auto_labeling_result(self, image_file, auto_labeling_result):
 def process_next_image(self, progress_dialog):
     try:
         batch = True
-        total_images = len(self.image_list)
+        total_images = (
+            self.batch_end_index + 1
+            if hasattr(self, "batch_end_index")
+            else len(self.image_list)
+        )
         self._progress_dialog = progress_dialog
 
         while (self.image_index < total_images) and (
@@ -303,6 +317,8 @@ def process_next_image(self, progress_dialog):
         progress_dialog.close()
 
         logger.error(f"Error occurred while processing images: {e}")
+        if hasattr(self, "batch_end_index"):
+            del self.batch_end_index
         popup = Popup(
             self.tr("Error occurred while processing images!"),
             self,
@@ -314,11 +330,16 @@ def process_next_image(self, progress_dialog):
 def show_progress_dialog_and_process(self):
     self.cancel_processing = False
 
+    total_images = (
+        self.batch_end_index + 1
+        if hasattr(self, "batch_end_index")
+        else len(self.image_list)
+    )
     progress_dialog = QProgressDialog(
         self.tr("Processing..."),
         self.tr("Cancel"),
         self.image_index,
-        len(self.image_list),
+        total_images,
         self,
     )
     progress_dialog.setWindowModality(Qt.WindowModal)
@@ -327,7 +348,7 @@ def show_progress_dialog_and_process(self):
     progress_dialog.setMinimumHeight(150)
 
     progress_dialog.setLabelText(
-        f"Progress: {self.image_index}/{len(self.image_list)}"
+        f"Progress: {self.image_index}/{total_images}"
     )
     progress_bar = progress_dialog.findChild(QtWidgets.QProgressBar)
 
@@ -347,7 +368,7 @@ def show_progress_dialog_and_process(self):
 
         def update_progress(value):
             if batch_processing_mode != "video":
-                progress_dialog.setLabelText(f"{value}/{len(self.image_list)}")
+                progress_dialog.setLabelText(f"{value}/{total_images}")
 
         progress_bar.valueChanged.connect(update_progress)
 
@@ -439,10 +460,20 @@ def run_all_images(self):
         )
         return
 
+    current_index = self.fn_to_index[str(self.filename)]
+    batch_end_index = get_batch_end_index(self, current_index)
+    if batch_end_index is None:
+        return
+
     response = QtWidgets.QMessageBox()
     response.setIcon(QtWidgets.QMessageBox.Warning)
     response.setWindowTitle(self.tr("Confirmation"))
-    response.setText(self.tr("Do you want to process all images?"))
+    response.setText(
+        self.tr("Do you want to process images {start}-{end}?").format(
+            start=current_index + 1,
+            end=batch_end_index + 1,
+        )
+    )
     response.setStandardButtons(
         QtWidgets.QMessageBox.Cancel | QtWidgets.QMessageBox.Ok
     )
@@ -453,8 +484,9 @@ def run_all_images(self):
 
     logger.info("Start running all images...")
 
-    self.current_index = self.fn_to_index[str(self.filename)]
-    self.image_index = self.current_index
+    self.current_index = current_index
+    self.image_index = current_index
+    self.batch_end_index = batch_end_index
     self.text_prompt = ""
     self.run_tracker = False
 

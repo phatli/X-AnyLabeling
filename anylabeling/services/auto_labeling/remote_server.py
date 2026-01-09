@@ -1,9 +1,11 @@
 import base64
 import cv2
 import json
+import math
 import numpy as np
 import os
 import requests
+import time
 from pathlib import Path
 
 from PyQt5 import QtCore
@@ -28,6 +30,7 @@ class RemoteServer(Model):
             "remote_server_select_combobox",
             "output_label",
             "output_select_combobox",
+            "button_remote_server_cleanup",
         ]
         output_modes = {
             "polygon": QCoreApplication.translate("Model", "Polygon"),
@@ -54,6 +57,10 @@ class RemoteServer(Model):
         self.current_model_id = None
         self.timeout = self.config.get("timeout", 30)
         self.models_info = {}
+        self.models_info_cache_at = 0.0
+        self.models_info_cache_ttl = self._safe_float(
+            self.config.get("models_cache_ttl", 3.0), 3.0
+        )
 
         self.marks = []
         self.conf_threshold = 0.0
@@ -70,6 +77,17 @@ class RemoteServer(Model):
         self.video_prompt_frame = None
         self.video_session_image_list = None
         self.video_prompt_type = None
+        self.video_has_object = False
+        self.video_last_shape = None
+        self.video_overlap_iou = self._safe_float(
+            self.config.get("video_overlap_iou", 0.5), 0.5
+        )
+        self.video_max_jump_ratio = self._safe_float(
+            self.config.get("video_max_jump_ratio", 3.0), 3.0
+        )
+        self.video_negative_points_limit = self._safe_int(
+            self.config.get("video_negative_points_limit", 5), 5
+        )
 
     def _normalize_output_mode(self) -> str:
         mode = (self.output_mode or "").strip().lower()
@@ -80,6 +98,142 @@ class RemoteServer(Model):
         if mode in {"polygon", "mask", "seg"}:
             return "polygon"
         return self.Meta.default_output_mode
+
+    @staticmethod
+    def _safe_float(value, default):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _safe_int(value, default):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _load_annotation_info(self, image_path):
+        annotation_path = Path(image_path).with_suffix(".json")
+        if not annotation_path.exists():
+            return [], None, None
+        try:
+            with annotation_path.open("r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return [], None, None
+
+        shapes = []
+        for shape in data.get("shapes", []):
+            points = shape.get("points", [])
+            if not points:
+                continue
+            shapes.append(
+                {
+                    "shape_type": shape.get("shape_type", "polygon"),
+                    "points": points,
+                }
+            )
+        return shapes, data.get("imageWidth"), data.get("imageHeight")
+
+    def _shape_bbox(self, shape):
+        points = shape.get("points", [])
+        if not points:
+            return None
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        return min(xs), min(ys), max(xs), max(ys)
+
+    def _shape_center_and_size(self, shape):
+        bbox = self._shape_bbox(shape)
+        if bbox is None:
+            return None
+        x_min, y_min, x_max, y_max = bbox
+        cx = (x_min + x_max) / 2.0
+        cy = (y_min + y_max) / 2.0
+        return cx, cy, max(x_max - x_min, 1.0), max(y_max - y_min, 1.0)
+
+    def _shape_to_mask(self, shape, width, height):
+        points = shape.get("points", [])
+        if not points:
+            return None
+        pts = np.array(points, dtype=np.int32)
+        if pts.ndim != 2 or pts.shape[0] < 3:
+            return None
+        mask = np.zeros((height, width), dtype=np.uint8)
+        cv2.fillPoly(mask, [pts], 1)
+        return mask
+
+    def _shape_iou(self, shape_a, shape_b, width, height):
+        mask_a = self._shape_to_mask(shape_a, width, height)
+        mask_b = self._shape_to_mask(shape_b, width, height)
+        if mask_a is None or mask_b is None:
+            return 0.0
+        inter = np.logical_and(mask_a, mask_b).sum()
+        if inter == 0:
+            return 0.0
+        union = np.logical_or(mask_a, mask_b).sum()
+        if union == 0:
+            return 0.0
+        return float(inter) / float(union)
+
+    def _overlaps_existing(self, shape, existing_shapes, width, height):
+        if not existing_shapes or width is None or height is None:
+            return False
+        threshold = max(self.video_overlap_iou, 0.0)
+        if threshold <= 0:
+            return False
+        for existing in existing_shapes:
+            if (
+                self._shape_iou(shape, existing, width, height)
+                >= threshold
+            ):
+                return True
+        return False
+
+    def _jump_too_large(self, shape, last_shape):
+        if last_shape is None:
+            return False
+        curr = self._shape_center_and_size(shape)
+        prev = self._shape_center_and_size(last_shape)
+        if curr is None or prev is None:
+            return False
+        cx, cy, _, _ = curr
+        px, py, pw, ph = prev
+        max_jump_ratio = max(self.video_max_jump_ratio, 0.0)
+        if max_jump_ratio <= 0:
+            return False
+        dist = math.hypot(cx - px, cy - py)
+        limit = max(pw, ph) * max_jump_ratio
+        return dist > limit
+
+    def _build_negative_points(self, existing_shapes, pos_points):
+        if not existing_shapes:
+            return [], []
+        negative_points = []
+        negative_labels = []
+        min_dist = 5.0
+        for shape in existing_shapes:
+            center = self._shape_center_and_size(shape)
+            if center is None:
+                continue
+            cx, cy, _, _ = center
+            too_close = False
+            for px, py in pos_points:
+                if math.hypot(cx - px, cy - py) <= min_dist:
+                    too_close = True
+                    break
+            if too_close:
+                continue
+            negative_points.append([cx, cy])
+            negative_labels.append(0)
+            if (
+                self.video_negative_points_limit > 0
+                and len(negative_points)
+                >= self.video_negative_points_limit
+            ):
+                break
+        return negative_points, negative_labels
 
     def _extract_error_message(self, result):
         error = result.get("error")
@@ -99,6 +253,14 @@ class RemoteServer(Model):
 
     def get_available_models(self):
         """Fetch available models from remote server"""
+        now = time.time()
+        if (
+            self.models_info
+            and self.models_info_cache_ttl > 0
+            and now - self.models_info_cache_at
+            < self.models_info_cache_ttl
+        ):
+            return self.models_info
         try:
             models_url = f"{self.server_url}/v1/models"
             response = requests.get(
@@ -107,9 +269,12 @@ class RemoteServer(Model):
             response.raise_for_status()
             result = response.json()
             self.models_info = result.get("data", {})
+            self.models_info_cache_at = now
             return self.models_info
         except Exception as e:
             logger.error(f"Failed to fetch available models: {e}")
+            if self.models_info:
+                return self.models_info
             return {}
 
     def get_batch_processing_mode(self):
@@ -139,6 +304,43 @@ class RemoteServer(Model):
     def set_auto_labeling_reset_tracker(self):
         """Reset tracker state for tracking models."""
         self.reset_tracker_flag = True
+
+    def clear_server_cache(self):
+        """Release server memory/GPU cache"""
+        if not self.current_model_id:
+            self.on_message(self.tr("No server model selected; cleanup skipped."))
+            return False
+
+        cleanup_url = (
+            f"{self.server_url}/v1/models/{self.current_model_id}/cleanup"
+        )
+        try:
+            response = requests.post(
+                url=cleanup_url, headers=self.headers, timeout=self.timeout
+            )
+            response.raise_for_status()
+            payload = response.json() if response.content else {}
+            data = payload.get("data", {}) if isinstance(payload, dict) else {}
+            sessions = data.get("sessions_cleared")
+            tasks = data.get("tasks_cancelled")
+            if sessions is not None or tasks is not None:
+                message = self.tr(
+                    "Released server cache. Sessions cleared: {sessions}, tasks cancelled: {tasks}."
+                ).format(
+                    sessions=sessions if sessions is not None else 0,
+                    tasks=tasks if tasks is not None else 0,
+                )
+            else:
+                message = self.tr("Cleanup request sent to server.")
+            self.on_message(message)
+            self._reset_video_session()
+            return True
+        except Exception as e:
+            logger.error(f"Server cleanup error: {e}")
+            self.on_message(
+                self.tr("Failed to clean server cache: {error}").format(error=str(e))
+            )
+            return False
 
     def predict_shapes(
         self, image, image_path=None, text_prompt=None, run_tracker=False
@@ -602,7 +804,32 @@ class RemoteServer(Model):
             points_tensor = points_rel.tolist()
             point_labels_tensor = labels.tolist()
 
+            existing_shapes, image_width, image_height = (
+                self._load_annotation_info(image_path)
+            )
+            if existing_shapes:
+                extra_points, extra_labels = self._build_negative_points(
+                    existing_shapes, points_abs.tolist()
+                )
+                if extra_points:
+                    extra_points_rel = (
+                        np.array(extra_points, dtype=np.float32)
+                        / np.array(
+                            [img_width, img_height], dtype=np.float32
+                        )
+                    ).tolist()
+                    points_tensor.extend(extra_points_rel)
+                    point_labels_tensor.extend(extra_labels)
+
             prompt_url = f"{self.server_url}/v1/video/prompt"
+            prompt_params = {
+                "conf_threshold": self.conf_threshold,
+                "epsilon_factor": self.epsilon_factor,
+                "output_mode": self._normalize_output_mode(),
+            }
+            if self.reset_tracker_flag or self.video_has_object:
+                prompt_params["reset_tracker"] = True
+                self.reset_tracker_flag = False
             prompt_response = requests.post(
                 url=prompt_url,
                 json={
@@ -612,11 +839,7 @@ class RemoteServer(Model):
                     "points": points_tensor,
                     "point_labels": point_labels_tensor,
                     "obj_id": 10000,
-                    "params": {
-                        "conf_threshold": self.conf_threshold,
-                        "epsilon_factor": self.epsilon_factor,
-                        "output_mode": self._normalize_output_mode(),
-                    },
+                    "params": prompt_params,
                 },
                 headers=self.headers,
                 timeout=self.timeout,
@@ -690,6 +913,9 @@ class RemoteServer(Model):
 
             results = {}
             total_frames = 0
+            start_idx = None
+            end_idx = None
+            frames_to_process = 0
             is_first_progress = True
 
             cancelled = False
@@ -717,7 +943,17 @@ class RemoteServer(Model):
                     total_frames = event.get("total_frames", 0)
                     start_frame_index = event.get("start_frame_index", 0)
                     start_idx = self.video_prompt_frame or start_frame_index
-                    frames_to_process = total_frames - start_idx
+                    if total_frames > 0:
+                        end_idx = total_frames - 1
+                    else:
+                        end_idx = start_idx
+                    if end_idx < start_idx:
+                        end_idx = start_idx
+                    frames_to_process = (
+                        end_idx - start_idx + 1
+                        if total_frames > 0
+                        else 0
+                    )
                     if progress_dialog and frames_to_process > 0:
                         progress_dialog.setMaximum(frames_to_process)
                         progress_dialog.setValue(0)
@@ -732,12 +968,20 @@ class RemoteServer(Model):
 
                 elif event_type == "progress":
                     current_frame = event.get("current_frame", 0)
-                    start_idx = self.video_prompt_frame or 0
+                    if start_idx is None:
+                        start_idx = self.video_prompt_frame or 0
+                    if end_idx is None:
+                        end_idx = total_frames - 1
+                    if end_idx < start_idx:
+                        end_idx = start_idx
+                    if frames_to_process <= 0 and total_frames > 0:
+                        frames_to_process = end_idx - start_idx + 1
                     relative_frame = current_frame - start_idx
                     if relative_frame < 0:
                         relative_frame = 0
                     display_frame = relative_frame + 1
-                    frames_to_process = total_frames - start_idx
+                    if frames_to_process > 0:
+                        display_frame = min(display_frame, frames_to_process)
 
                     if progress_dialog:
                         try:
@@ -782,6 +1026,7 @@ class RemoteServer(Model):
                 logger.warning("Widget or image list not available")
                 return AutoLabelingResult([], replace=False)
 
+            self.video_last_shape = None
             saved_count = 0
             for frame_idx_str, frame_result in results.items():
                 try:
@@ -792,10 +1037,24 @@ class RemoteServer(Model):
                         if not masks:
                             continue
 
+                        existing_shapes, img_width, img_height = (
+                            self._load_annotation_info(frame_file)
+                        )
                         shapes = []
                         for shape_data in masks:
                             points = shape_data.get("points", [])
                             if not points:
+                                continue
+                            if self._overlaps_existing(
+                                shape_data,
+                                existing_shapes,
+                                img_width,
+                                img_height,
+                            ):
+                                continue
+                            if self._jump_too_large(
+                                shape_data, self.video_last_shape
+                            ):
                                 continue
                             label = shape_data.get("label", "AUTOLABEL_OBJECT")
                             if self.label is not None:
@@ -817,6 +1076,7 @@ class RemoteServer(Model):
                                 )
                             if shape.points:
                                 shapes.append(shape)
+                                self.video_last_shape = shape_data
 
                         if shapes:
                             from anylabeling.views.labeling.utils.batch import (
@@ -842,6 +1102,8 @@ class RemoteServer(Model):
                     )
 
             self.label, self.group_id = None, None
+            if saved_count > 0:
+                self.video_has_object = True
             logger.info(f"Saved results for {saved_count} frames")
             return AutoLabelingResult([], replace=False)
 
@@ -875,6 +1137,8 @@ class RemoteServer(Model):
 
         self.label = None
         self.group_id = None
+        self.video_has_object = False
+        self.video_last_shape = None
         self.video_session_id = None
         self.video_initialized = False
         self.video_prompt_frame = None

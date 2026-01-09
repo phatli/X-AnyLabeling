@@ -84,6 +84,9 @@ class AutoLabelingWidget(QWidget):
         self.model_manager.output_modes_changed.connect(
             self.on_output_modes_changed
         )
+        self.model_manager.remote_server_models_ready.connect(
+            self.on_remote_server_models_ready
+        )
         self.output_select_combobox.currentIndexChanged.connect(
             lambda: self.model_manager.set_output_mode(
                 self.output_select_combobox.currentData()
@@ -121,6 +124,7 @@ class AutoLabelingWidget(QWidget):
             self.gd_select_combobox.setEnabled(enable)
             self.florence2_select_combobox.setEnabled(enable)
             self.remote_server_select_combobox.setEnabled(enable)
+            self.button_remote_server_cleanup.setEnabled(enable)
 
         self.model_manager.prediction_started.connect(
             lambda: set_enable_tools(False)
@@ -155,6 +159,14 @@ class AutoLabelingWidget(QWidget):
         # --- Configuration for: button_reset_tracker ---
         self.button_reset_tracker.setStyleSheet(get_normal_button_style())
         self.button_reset_tracker.clicked.connect(self.on_reset_tracker)
+
+        # --- Configuration for: button_remote_server_cleanup ---
+        self.button_remote_server_cleanup.setStyleSheet(
+            get_normal_button_style()
+        )
+        self.button_remote_server_cleanup.clicked.connect(
+            self.on_remote_server_cleanup
+        )
 
         # --- Configuration for: button_set_api_token ---
         self.button_set_api_token.setStyleSheet(get_normal_button_style())
@@ -864,6 +876,7 @@ class AutoLabelingWidget(QWidget):
             "gd_select_combobox",
             "florence2_select_combobox",
             "remote_server_select_combobox",
+            "button_remote_server_cleanup",
             "button_auto_decode",
             "button_cropping",
             "button_skip_detection",
@@ -926,6 +939,10 @@ class AutoLabelingWidget(QWidget):
     def on_reset_tracker(self):
         """Handle reset tracker"""
         self.model_manager.set_auto_labeling_reset_tracker()
+
+    def on_remote_server_cleanup(self):
+        """Release remote server memory/GPU cache"""
+        self.model_manager.clear_remote_server_cache()
 
     def on_set_api_token(self):
         """Show a dialog to input the API token."""
@@ -1090,10 +1107,30 @@ class AutoLabelingWidget(QWidget):
         ):
             return
 
-        available_models = (
-            self.model_manager.get_remote_server_available_models()
+        cached_models = (
+            self.model_manager.get_remote_server_available_models_cached()
         )
+        if cached_models:
+            self._apply_remote_server_models(cached_models)
+        else:
+            self.remote_server_select_combobox.blockSignals(True)
+            self.remote_server_select_combobox.clear()
+            self.remote_server_select_combobox.addItem("Loading...", None)
+            self.remote_server_select_combobox.blockSignals(False)
 
+        self.model_manager.request_remote_server_models()
+
+    def on_remote_server_models_ready(self, available_models):
+        if (
+            not self.model_manager.loaded_model_config
+            or self.model_manager.loaded_model_config.get("type")
+            != "remote_server"
+        ):
+            return
+        self._apply_remote_server_models(available_models)
+
+    def _apply_remote_server_models(self, available_models):
+        current_id = self.remote_server_select_combobox.currentData()
         self.remote_server_select_combobox.blockSignals(True)
         self.remote_server_select_combobox.clear()
 
@@ -1105,11 +1142,21 @@ class AutoLabelingWidget(QWidget):
 
         self.remote_server_select_combobox.blockSignals(False)
 
-        if available_models:
-            self.remote_server_select_combobox.setCurrentIndex(0)
-            first_model_id = list(available_models.keys())[0]
-            self.model_manager.set_remote_server_model(first_model_id)
-            self.update_remote_server_widgets(first_model_id)
+        if not available_models:
+            return
+
+        target_id = (
+            current_id
+            if current_id in available_models
+            else list(available_models.keys())[0]
+        )
+        target_index = self.remote_server_select_combobox.findData(
+            target_id
+        )
+        if target_index != -1:
+            self.remote_server_select_combobox.setCurrentIndex(target_index)
+        self.model_manager.set_remote_server_model(target_id)
+        self.update_remote_server_widgets(target_id)
 
     def update_remote_server_widgets(self, model_id):
         """Update widget visibility based on remote server model"""
@@ -1121,7 +1168,7 @@ class AutoLabelingWidget(QWidget):
             return
 
         available_models = (
-            self.model_manager.get_remote_server_available_models()
+            self.model_manager.get_remote_server_available_models_cached()
         )
         if model_id not in available_models:
             return

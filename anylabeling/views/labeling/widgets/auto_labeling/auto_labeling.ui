@@ -11,7 +11,7 @@
    </rect>
   </property>
   <property name="sizePolicy">
-   <sizepolicy hsizetype="Minimum" vsizetype="Minimum">
+   <sizepolicy hsizetype="Expanding" vsizetype="Minimum">
     <horstretch>0</horstretch>
     <verstretch>0</verstretch>
    </sizepolicy>
@@ -46,13 +46,13 @@
      <property name="topMargin">
       <number>0</number>
      </property>
-    <item>
-        <widget class="QPushButton" name="model_selection_button">
-            <property name="text">
-                <string>No Model</string>
-            </property>
-        </widget>
-    </item>
+     <item>
+      <widget class="QPushButton" name="model_selection_button">
+       <property name="text">
+        <string>No Model</string>
+       </property>
+      </widget>
+     </item>
      <item>
       <widget class="QLabel" name="output_label">
        <property name="text">
@@ -81,9 +81,9 @@
      </item>
      <item>
       <widget class="QComboBox" name="upn_select_combobox">
-        <property name="currentIndex">
-            <number>0</number>
-        </property>
+       <property name="currentIndex">
+        <number>0</number>
+       </property>
        <item>
         <property name="text">
          <string>coarse_grained_prompt</string>
@@ -98,9 +98,9 @@
      </item>
      <item>
       <widget class="QComboBox" name="florence2_select_combobox">
-        <property name="currentIndex">
-            <number>0</number>
-        </property>
+       <property name="currentIndex">
+        <number>0</number>
+       </property>
        <item>
         <property name="text">
          <string>caption</string>
@@ -175,9 +175,9 @@
      </item>
      <item>
       <widget class="QComboBox" name="gd_select_combobox">
-        <property name="currentIndex">
-            <number>0</number>
-        </property>
+       <property name="currentIndex">
+        <number>0</number>
+       </property>
        <item>
         <property name="text">
          <string>GroundingDino_1_6_Pro</string>
@@ -202,18 +202,31 @@
      </item>
      <item>
       <widget class="QComboBox" name="remote_server_select_combobox">
-        <property name="currentIndex">
-            <number>-1</number>
-        </property>
-      </widget>
-     </item>
-     <item>
-      <widget class="Line" name="line">
-       <property name="orientation">
-        <enum>Qt::Vertical</enum>
+       <property name="currentIndex">
+        <number>-1</number>
        </property>
       </widget>
      </item>
+     <item>
+      <widget class="QPushButton" name="button_remote_server_cleanup">
+       <property name="toolTip">
+        <string>Release server RAM/GPU cache</string>
+       </property>
+       <property name="text">
+        <string>Release Server Cache</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <layout class="QHBoxLayout" name="model_controls">
+     <property name="spacing">
+      <number>6</number>
+     </property>
+     <property name="topMargin">
+      <number>0</number>
+     </property>
      <item>
       <widget class="QPushButton" name="button_run">
        <property name="text">
@@ -223,18 +236,18 @@
      </item>
      <item>
       <widget class="QLineEdit" name="edit_text">
-        <property name="placeholderText">
-            <string>Enter text prompt here, e.g., person.car.bicycle</string>
-        </property>
+       <property name="placeholderText">
+        <string>Enter text prompt here, e.g., person.car.bicycle</string>
+       </property>
       </widget>
      </item>
-    <item>
-        <widget class="QPushButton" name="button_send">
-            <property name="text">
-                <string>Send</string>
-            </property>
-        </widget>
-    </item>
+     <item>
+      <widget class="QPushButton" name="button_send">
+       <property name="text">
+        <string>Send</string>
+       </property>
+      </widget>
+     </item>
      <item>
       <widget class="QLabel" name="input_box_thres">
        <property name="text">
@@ -333,13 +346,13 @@
        </property>
       </widget>
      </item>
-    <item>
-        <widget class="QPushButton" name="button_run_rect">
-            <property name="text">
-                <string>Run Rect</string>
-            </property>
-        </widget>
-    </item>
+     <item>
+      <widget class="QPushButton" name="button_run_rect">
+       <property name="text">
+        <string>Run Rect</string>
+       </property>
+      </widget>
+     </item>
      <item>
       <widget class="QPushButton" name="button_finish_object">
        <property name="text">
@@ -379,9 +392,9 @@
      </item>
      <item>
       <widget class="QPushButton" name="toggle_preserve_existing_annotations">
-          <property name="text">
-              <string>Replace (On)</string>
-          </property>
+       <property name="text">
+        <string>Replace (On)</string>
+       </property>
       </widget>
      </item>
      <item>

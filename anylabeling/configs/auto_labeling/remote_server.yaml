@@ -5,3 +5,6 @@ display_name: Remote-Server
 server_url: http://localhost:8000
 api_key: ""
 timeout: 30
+video_overlap_iou: 0.35
+video_max_jump_ratio: 5.0
+video_negative_points_limit: 3
