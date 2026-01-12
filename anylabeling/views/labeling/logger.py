@@ -1,4 +1,5 @@
 import logging
+import os
 import sys
 from functools import wraps
 from typing import Callable, Dict
@@ -62,6 +63,7 @@ class AppLogger:
         self.logger = logging.getLogger(name)
         self.logger.propagate = False
         self._setup_handler()
+        self._setup_file_handler()
 
     def _setup_handler(self):
         stream_handler = logging.StreamHandler(sys.stderr)
@@ -70,6 +72,30 @@ class AppLogger:
         )
         stream_handler.setFormatter(handler_format)
         self.logger.addHandler(stream_handler)
+
+    def _setup_file_handler(self):
+        log_path = os.getenv("XANYLABELING_LOG_FILE", "").strip()
+        if not log_path:
+            return
+        log_path = os.path.expanduser(log_path)
+        log_dir = os.path.dirname(log_path)
+        if log_dir:
+            try:
+                os.makedirs(log_dir, exist_ok=True)
+            except OSError:
+                return
+        for handler in self.logger.handlers:
+            if isinstance(handler, logging.FileHandler):
+                if os.path.abspath(handler.baseFilename) == os.path.abspath(
+                    log_path
+                ):
+                    return
+        file_handler = logging.FileHandler(log_path, encoding="utf-8")
+        file_format = logging.Formatter(
+            "%(asctime)s | %(levelname)s | %(module)s:%(funcName)s:%(lineno)d - %(message)s"
+        )
+        file_handler.setFormatter(file_format)
+        self.logger.addHandler(file_handler)
 
     def __getattr__(self, name: str) -> Callable:
         return getattr(self.logger, name)

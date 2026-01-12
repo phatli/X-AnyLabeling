@@ -1026,6 +1026,46 @@ class RemoteServer(Model):
                 logger.warning("Widget or image list not available")
                 return AutoLabelingResult([], replace=False)
 
+            try:
+                frame_indices = sorted(
+                    int(key) for key in results.keys()
+                )
+            except Exception:
+                frame_indices = []
+            if frame_indices:
+                logger.info(
+                    "前向推理结果统计: 结果帧数=%d, 帧范围=%d-%d, image_list=%d, prompt_frame=%s",
+                    len(frame_indices),
+                    frame_indices[0],
+                    frame_indices[-1],
+                    len(image_list),
+                    str(self.video_prompt_frame),
+                )
+            else:
+                logger.info(
+                    "前向推理结果统计: 结果帧数=0, image_list=%d, prompt_frame=%s",
+                    len(image_list),
+                    str(self.video_prompt_frame),
+                )
+
+            stats = {
+                "saved_frames": 0,
+                "skipped_out_of_range": 0,
+                "skipped_no_masks": 0,
+                "skipped_no_points": 0,
+                "skipped_overlap": 0,
+                "skipped_jump": 0,
+                "skipped_all_filtered": 0,
+            }
+            samples = {
+                "out_of_range": [],
+                "no_masks": [],
+                "no_points": [],
+                "overlap": [],
+                "jump": [],
+                "all_filtered": [],
+            }
+
             self.video_last_shape = None
             saved_count = 0
             for frame_idx_str, frame_result in results.items():
@@ -1035,26 +1075,39 @@ class RemoteServer(Model):
                         frame_file = image_list[frame_idx]
                         masks = frame_result.get("masks", [])
                         if not masks:
+                            stats["skipped_no_masks"] += 1
+                            if len(samples["no_masks"]) < 10:
+                                samples["no_masks"].append(frame_idx)
                             continue
 
                         existing_shapes, img_width, img_height = (
                             self._load_annotation_info(frame_file)
                         )
                         shapes = []
+                        frame_has_points = False
+                        frame_has_overlap = False
+                        frame_has_jump = False
                         for shape_data in masks:
                             points = shape_data.get("points", [])
                             if not points:
+                                frame_has_points = True
+                                stats["skipped_no_points"] += 1
+                                if len(samples["no_points"]) < 10:
+                                    samples["no_points"].append(frame_idx)
                                 continue
+                            frame_has_points = True
                             if self._overlaps_existing(
                                 shape_data,
                                 existing_shapes,
                                 img_width,
                                 img_height,
                             ):
+                                frame_has_overlap = True
                                 continue
                             if self._jump_too_large(
                                 shape_data, self.video_last_shape
                             ):
+                                frame_has_jump = True
                                 continue
                             label = shape_data.get("label", "AUTOLABEL_OBJECT")
                             if self.label is not None:
@@ -1096,6 +1149,24 @@ class RemoteServer(Model):
                                 ),
                             )
                             saved_count += 1
+                            stats["saved_frames"] += 1
+                        else:
+                            stats["skipped_all_filtered"] += 1
+                            if len(samples["all_filtered"]) < 10:
+                                samples["all_filtered"].append(frame_idx)
+                            if frame_has_overlap:
+                                stats["skipped_overlap"] += 1
+                                if len(samples["overlap"]) < 10:
+                                    samples["overlap"].append(frame_idx)
+                            if frame_has_jump:
+                                stats["skipped_jump"] += 1
+                                if len(samples["jump"]) < 10:
+                                    samples["jump"].append(frame_idx)
+                    else:
+                        stats["skipped_out_of_range"] += 1
+                        if len(samples["out_of_range"]) < 10:
+                            samples["out_of_range"].append(frame_idx)
+                        continue
                 except (ValueError, KeyError) as e:
                     logger.warning(
                         f"Error processing frame {frame_idx_str}: {e}"
@@ -1104,6 +1175,25 @@ class RemoteServer(Model):
             self.label, self.group_id = None, None
             if saved_count > 0:
                 self.video_has_object = True
+            logger.info(
+                "前向推理保存统计: 保存=%d, 越界=%d, 无mask=%d, 无points=%d, 重叠过滤=%d, 跳跃过滤=%d, 全部被过滤=%d",
+                stats["saved_frames"],
+                stats["skipped_out_of_range"],
+                stats["skipped_no_masks"],
+                stats["skipped_no_points"],
+                stats["skipped_overlap"],
+                stats["skipped_jump"],
+                stats["skipped_all_filtered"],
+            )
+            logger.info(
+                "前向推理样本帧: 越界=%s, 无mask=%s, 无points=%s, 重叠=%s, 跳跃=%s, 全部过滤=%s",
+                samples["out_of_range"],
+                samples["no_masks"],
+                samples["no_points"],
+                samples["overlap"],
+                samples["jump"],
+                samples["all_filtered"],
+            )
             logger.info(f"Saved results for {saved_count} frames")
             return AutoLabelingResult([], replace=False)
 
