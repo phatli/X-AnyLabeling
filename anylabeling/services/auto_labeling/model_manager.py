@@ -2213,6 +2213,26 @@ class ModelManager(QObject):
         if self.loaded_model_config["type"] == "remote_server":
             self.loaded_model_config["model"].set_model_id(model_id)
 
+    def set_remote_server_image_size(self, image_size: int):
+        """Set remote server image size."""
+        if self.loaded_model_config is None:
+            return
+
+        if self.loaded_model_config["type"] == "remote_server":
+            model = self.loaded_model_config.get("model")
+            if hasattr(model, "set_image_size"):
+                model.set_image_size(image_size)
+
+    def set_remote_server_session_frame_length(self, value: int):
+        """Set remote server session frame length."""
+        if self.loaded_model_config is None:
+            return
+
+        if self.loaded_model_config["type"] == "remote_server":
+            model = self.loaded_model_config.get("model")
+            if hasattr(model, "set_session_frame_length"):
+                model.set_session_frame_length(value)
+
     def clear_remote_server_cache(self):
         """释放远端服务缓存"""
         if self.loaded_model_config is None:

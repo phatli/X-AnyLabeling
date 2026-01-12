@@ -77,6 +77,7 @@ class RemoteServer(Model):
         self.video_prompt_frame = None
         self.video_session_image_list = None
         self.video_prompt_type = None
+        self.video_session_settings = None
         self.video_has_object = False
         self.video_last_shape = None
         self.video_overlap_iou = self._safe_float(
@@ -87,6 +88,12 @@ class RemoteServer(Model):
         )
         self.video_negative_points_limit = self._safe_int(
             self.config.get("video_negative_points_limit", 5), 5
+        )
+        self.image_size = self._safe_int(
+            self.config.get("image_size", 1008), 1008
+        )
+        self.session_frame_length = self._safe_int(
+            self.config.get("session_frame_length", 0), 0
         )
 
     def _normalize_output_mode(self) -> str:
@@ -304,6 +311,14 @@ class RemoteServer(Model):
     def set_auto_labeling_reset_tracker(self):
         """Reset tracker state for tracking models."""
         self.reset_tracker_flag = True
+
+    def set_image_size(self, image_size: int):
+        self.image_size = self._safe_int(image_size, self.image_size)
+
+    def set_session_frame_length(self, value: int):
+        self.session_frame_length = self._safe_int(
+            value, self.session_frame_length
+        )
 
     def clear_server_cache(self):
         """Release server memory/GPU cache"""
@@ -532,6 +547,20 @@ class RemoteServer(Model):
                 )
                 self._reset_video_session()
 
+            current_settings = {
+                "image_size": self.image_size,
+                "session_frame_length": self.session_frame_length,
+            }
+            if (
+                self.video_session_id
+                and self.video_session_settings is not None
+                and self.video_session_settings != current_settings
+            ):
+                logger.info(
+                    "Video session settings changed, resetting video session"
+                )
+                self._reset_video_session()
+
             if not self.video_session_id:
                 frames_data = []
                 for frame_path in image_list:
@@ -566,6 +595,8 @@ class RemoteServer(Model):
                         "model": self.current_model_id,
                         "frames": frames_data,
                         "start_frame_index": 0,
+                        "image_size": self.image_size,
+                        "session_frame_limit": self.session_frame_length,
                     },
                     headers=self.headers,
                     timeout=self.timeout * 2,
@@ -589,6 +620,7 @@ class RemoteServer(Model):
                     return AutoLabelingResult([], replace=self.replace)
                 self.video_initialized = True
                 self.video_session_image_list = image_list.copy()
+                self.video_session_settings = current_settings
                 logger.info(
                     f"Video session initialized: {self.video_session_id}"
                 )
@@ -619,6 +651,9 @@ class RemoteServer(Model):
                 self._reset_video_session()
                 return AutoLabelingResult([], replace=self.replace)
             data = prompt_result.get("data", {})
+            self._notify_session_restart(
+                data.get("session_restart"), image_list
+            )
 
             self.video_prompt_frame = current_index
             self.video_prompt_type = "text"
@@ -713,6 +748,20 @@ class RemoteServer(Model):
                 )
                 self._reset_video_session()
 
+            current_settings = {
+                "image_size": self.image_size,
+                "session_frame_length": self.session_frame_length,
+            }
+            if (
+                self.video_session_id
+                and self.video_session_settings is not None
+                and self.video_session_settings != current_settings
+            ):
+                logger.info(
+                    "Video session settings changed, resetting video session"
+                )
+                self._reset_video_session()
+
             if not self.video_session_id:
                 frames_data = []
                 for frame_path in image_list:
@@ -747,6 +796,8 @@ class RemoteServer(Model):
                         "model": self.current_model_id,
                         "frames": frames_data,
                         "start_frame_index": 0,
+                        "image_size": self.image_size,
+                        "session_frame_limit": self.session_frame_length,
                     },
                     headers=self.headers,
                     timeout=self.timeout * 2,
@@ -770,6 +821,7 @@ class RemoteServer(Model):
                     return AutoLabelingResult([], replace=False)
                 self.video_initialized = True
                 self.video_session_image_list = image_list.copy()
+                self.video_session_settings = current_settings
                 logger.info(
                     f"Video session initialized: {self.video_session_id}"
                 )
@@ -853,6 +905,9 @@ class RemoteServer(Model):
                 self._reset_video_session()
                 return AutoLabelingResult([], replace=False)
             data = prompt_result.get("data", {})
+            self._notify_session_restart(
+                data.get("session_restart"), image_list
+            )
 
             self.video_prompt_frame = current_index
             self.video_prompt_type = "point"
@@ -917,6 +972,8 @@ class RemoteServer(Model):
             end_idx = None
             frames_to_process = 0
             is_first_progress = True
+            partial = False
+            partial_message = None
 
             cancelled = False
             for line in response.iter_lines(decode_unicode=True):
@@ -1001,8 +1058,15 @@ class RemoteServer(Model):
                         except Exception as e:
                             logger.warning(f"Error updating progress: {e}")
 
+                elif event_type == "session_restart":
+                    self._notify_session_restart(event, image_list)
+
                 elif event_type == "completed":
                     results = event.get("results", {})
+                    partial = bool(event.get("partial"))
+                    partial_message = event.get("message") or event.get("error")
+                    if partial and partial_message:
+                        self.on_message(partial_message)
                     logger.info(
                         f"Propagation completed: {len(results)} frame results"
                     )
@@ -1195,6 +1259,8 @@ class RemoteServer(Model):
                 samples["all_filtered"],
             )
             logger.info(f"Saved results for {saved_count} frames")
+            if partial:
+                self._reset_video_session()
             return AutoLabelingResult([], replace=False)
 
         except requests.exceptions.RequestException as e:
@@ -1209,6 +1275,25 @@ class RemoteServer(Model):
             self._reset_video_session()
             self.label, self.group_id = None, None
             return AutoLabelingResult([], replace=False)
+
+    def _notify_session_restart(self, restart_info, image_list):
+        if not isinstance(restart_info, dict):
+            return
+        restart_frame = restart_info.get("frame_index")
+        segment_frames = restart_info.get("segment_frames")
+        reason = restart_info.get("reason")
+        if restart_frame is None:
+            return
+        message_parts = [
+            self.tr("Session restarted at frame %s") % restart_frame
+        ]
+        if segment_frames:
+            message_parts.append(self.tr("segment frames: %s") % segment_frames)
+        if reason:
+            message_parts.append(self.tr("reason: %s") % reason)
+        if image_list and 0 <= restart_frame < len(image_list):
+            message_parts.append(os.path.basename(image_list[restart_frame]))
+        self.on_message(" | ".join(message_parts))
 
     def _reset_video_session(self):
         """Reset video session state and cleanup server session."""
@@ -1234,6 +1319,7 @@ class RemoteServer(Model):
         self.video_prompt_frame = None
         self.video_session_image_list = None
         self.video_prompt_type = None
+        self.video_session_settings = None
 
     def unload(self):
         """Unload the model"""

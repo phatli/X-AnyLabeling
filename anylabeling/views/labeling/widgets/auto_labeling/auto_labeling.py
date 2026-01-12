@@ -104,6 +104,12 @@ class AutoLabelingWidget(QWidget):
         self.remote_server_select_combobox.currentIndexChanged.connect(
             self.on_remote_server_model_changed
         )
+        self.image_size_select_combobox.currentIndexChanged.connect(
+            self.on_image_size_changed
+        )
+        self.session_frame_length_spinbox.valueChanged.connect(
+            self.on_session_frame_length_changed
+        )
 
         # Disable tools when inference is running
         def set_enable_tools(enable):
@@ -125,6 +131,8 @@ class AutoLabelingWidget(QWidget):
             self.florence2_select_combobox.setEnabled(enable)
             self.remote_server_select_combobox.setEnabled(enable)
             self.button_remote_server_cleanup.setEnabled(enable)
+            self.image_size_select_combobox.setEnabled(enable)
+            self.session_frame_length_spinbox.setEnabled(enable)
 
         self.model_manager.prediction_started.connect(
             lambda: set_enable_tools(False)
@@ -332,6 +340,7 @@ class AutoLabelingWidget(QWidget):
         self.populate_florence2_combobox()
         self.populate_gd_combobox()
         self.populate_remote_server_combobox()
+        self.populate_image_size_combobox()
 
     def init_model_data(self):
         """Get models data"""
@@ -877,6 +886,10 @@ class AutoLabelingWidget(QWidget):
             "florence2_select_combobox",
             "remote_server_select_combobox",
             "button_remote_server_cleanup",
+            "image_size_label",
+            "image_size_select_combobox",
+            "session_frame_length_label",
+            "session_frame_length_spinbox",
             "button_auto_decode",
             "button_cropping",
             "button_skip_detection",
@@ -1090,6 +1103,16 @@ class AutoLabelingWidget(QWidget):
         """Populate remote server combobox"""
         self.remote_server_select_combobox.clear()
 
+    def populate_image_size_combobox(self):
+        """Populate image size options for remote server video models."""
+        self.image_size_select_combobox.blockSignals(True)
+        self.image_size_select_combobox.clear()
+        for size in [768, 960, 1008]:
+            self.image_size_select_combobox.addItem(
+                str(size), userData=size
+            )
+        self.image_size_select_combobox.blockSignals(False)
+
     @pyqtSlot()
     def on_remote_server_model_changed(self):
         """Handle remote server model change"""
@@ -1097,6 +1120,19 @@ class AutoLabelingWidget(QWidget):
         if model_id:
             self.model_manager.set_remote_server_model(model_id)
             self.update_remote_server_widgets(model_id)
+
+    @pyqtSlot()
+    def on_image_size_changed(self):
+        """Handle remote server image size change."""
+        image_size = self.image_size_select_combobox.currentData()
+        if image_size is None:
+            return
+        self.model_manager.set_remote_server_image_size(image_size)
+
+    @pyqtSlot()
+    def on_session_frame_length_changed(self, value):
+        """Handle remote server session frame length change."""
+        self.model_manager.set_remote_server_session_frame_length(value)
 
     def update_remote_server_mode_ui(self):
         """Update remote server combobox with available models"""
@@ -1195,6 +1231,10 @@ class AutoLabelingWidget(QWidget):
             "edit_text",
             "mask_fineness_slider",
             "mask_fineness_value_label",
+            "image_size_label",
+            "image_size_select_combobox",
+            "session_frame_length_label",
+            "session_frame_length_spinbox",
         ]
 
         for widget_name in all_widgets:
@@ -1218,6 +1258,16 @@ class AutoLabelingWidget(QWidget):
                         widget.setChecked(widget_value)
                     elif hasattr(widget, "setText"):
                         widget.setText(str(widget_value))
+                    elif hasattr(widget, "setCurrentIndex") and hasattr(
+                        widget, "findData"
+                    ):
+                        index = widget.findData(widget_value)
+                        if index == -1 and hasattr(
+                            widget, "findText"
+                        ):
+                            index = widget.findText(str(widget_value))
+                        if index != -1:
+                            widget.setCurrentIndex(index)
 
                     if widget_name == "edit_conf":
                         self.on_conf_value_changed(widget_value)

@@ -305,6 +305,55 @@
       </widget>
      </item>
      <item>
+      <widget class="QLabel" name="image_size_label">
+       <property name="text">
+        <string>Image Size</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QComboBox" name="image_size_select_combobox">
+       <item>
+        <property name="text">
+         <string>768</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>960</string>
+        </property>
+       </item>
+       <item>
+        <property name="text">
+         <string>1008</string>
+        </property>
+       </item>
+      </widget>
+     </item>
+     <item>
+      <widget class="QLabel" name="session_frame_length_label">
+       <property name="text">
+        <string>Session Frames</string>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QSpinBox" name="session_frame_length_spinbox">
+       <property name="minimum">
+        <number>0</number>
+       </property>
+       <property name="maximum">
+        <number>10000</number>
+       </property>
+       <property name="singleStep">
+        <number>10</number>
+       </property>
+       <property name="value">
+        <number>0</number>
+       </property>
+      </widget>
+     </item>
+     <item>
       <widget class="QPushButton" name="button_add_point">
        <property name="text">
         <string>Point (q)</string>
